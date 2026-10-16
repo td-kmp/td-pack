@@ -33,7 +33,9 @@ fi
 
 git -C "$PROJECT_ROOT" submodule update --init --depth=1 td
 
+timings=""
 for step in "${steps[@]}"; do
+  step_start=$SECONDS
   case "$step" in
     codegen) codegen ;;
     zlib)    build_zlib ;;
@@ -46,4 +48,9 @@ for step in "${steps[@]}"; do
     jni-verify) verify_jni ;;
     *) error "Unknown step: $step" ;;
   esac
+  timings+="$step $((SECONDS - step_start))s, "
 done
+
+# Per-step durations as one CI annotation (readable without log access).
+[[ -n "${GITHUB_ACTIONS:-}" ]] && echo "::notice title=$TARGET timings::${timings%, }"
+exit 0

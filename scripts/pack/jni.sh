@@ -201,13 +201,15 @@ verify_jni() {
     linuxX64|linuxArm64)
       if command -v docker &>/dev/null && docker info &>/dev/null; then
         local platform; platform=$([[ "$TARGET" == linuxX64 ]] && echo linux/amd64 || echo linux/arm64)
-        run=(docker run --rm --platform "$platform" -v "$work:$work" -v "$(dirname "$lib"):/jnilib"
+        # shellcheck disable=SC2207
+        run=($(timeout_prefix) docker run --rm --platform "$platform" -v "$work:$work" -v "$(dirname "$lib"):/jnilib"
              eclipse-temurin:21-jre java -cp "$work/classes" JniSmoke "/jnilib/$(jni_library_name)")
       fi ;;
     mingwX64)
       local image
       if [[ "$(uname -s)" != MINGW* && "$(uname -s)" != MSYS* ]] && image="$(wine_image)"; then
-        run=(docker run --rm --platform linux/amd64 -v "$work:$work" -v "$(dirname "$lib"):/jnilib"
+        # shellcheck disable=SC2207
+        run=($(timeout_prefix) docker run --rm --platform linux/amd64 -v "$work:$work" -v "$(dirname "$lib"):/jnilib"
              "$image" wine /opt/jre/bin/java.exe -cp "Z:$work/classes" JniSmoke "Z:/jnilib/$(jni_library_name)")
       fi ;;
     android*)
@@ -245,8 +247,12 @@ run_android_jni_smoke() {
   fi
   "${adb[@]}" shell "rm -rf $dir && mkdir -p $dir" >/dev/null
   "${adb[@]}" push "$work/classes.dex" "$lib" "$dir/" >/dev/null
-  run_logged "$work/run.log" "${adb[@]}" shell \
-    "cd $dir && dalvikvm -cp classes.dex JniSmoke $dir/$(jni_library_name) && echo EXIT_OK"
+  # Multilib images default dalvikvm to 64-bit, which cannot load a 32-bit .so.
+  local vm
+  case "$ANDROID_ABI" in armeabi-v7a|x86) vm=dalvikvm32 ;; *) vm=dalvikvm64 ;; esac
+  run_logged "$work/run.log" "${adb[@]}" shell "VM=dalvikvm;
+    for c in /apex/com.android.art/bin/$vm /system/bin/$vm; do [ -x \$c ] && VM=\$c && break; done;
+    echo VM=\$VM; cd $dir && \$VM -cp classes.dex JniSmoke $dir/$(jni_library_name) && echo EXIT_OK"
   grep -q EXIT_OK "$work/run.log" || { tail -20 "$work/run.log" >&2; error "Android smoke test failed"; }
   success "Java smoke test runs on $TDPACK_ANDROID_SERIAL ($ANDROID_ABI): $(grep -o 'optionValueString[^,]*,[^,]*' "$work/run.log")"
 }

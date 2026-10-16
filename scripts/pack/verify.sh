@@ -6,6 +6,13 @@
 #   3. with TDPACK_NETWORK_TEST=1, tests/network.c against Telegram's test DC.
 # Also reports the klib size, which is what ends up on Maven Central.
 
+# A hung emulated program (QEMU, wine) must fail the step, not stall the job.
+# Prints a "timeout <secs>" prefix where coreutils' timeout exists.
+timeout_prefix() {
+  command -v timeout &>/dev/null && echo "timeout ${TDPACK_RUN_TIMEOUT:-900}"
+  return 0
+}
+
 # Builds (once per Dockerfile version) and prints the wine test image.
 wine_image() {
   command -v docker &>/dev/null && docker info &>/dev/null || return 1
@@ -41,7 +48,7 @@ target_runner() {
         local platform image
         if [[ "$TARGET" == linuxX64 ]]; then platform=linux/amd64; image=ubuntu:16.04
         else platform=linux/arm64; image=ubuntu:18.04; fi
-        echo "docker run --rm --platform $platform -v $BUILD_ROOT/verify:$BUILD_ROOT/verify $image"
+        echo "$(timeout_prefix) docker run --rm --platform $platform -v $BUILD_ROOT/verify:$BUILD_ROOT/verify $image"
       else
         return 1
       fi ;;
@@ -49,7 +56,7 @@ target_runner() {
       if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
         echo "env"
       elif wine_image >/dev/null; then
-        echo "docker run --rm --platform linux/amd64 -v $BUILD_ROOT/verify:$BUILD_ROOT/verify $(wine_image) wine"
+        echo "$(timeout_prefix) docker run --rm --platform linux/amd64 -v $BUILD_ROOT/verify:$BUILD_ROOT/verify $(wine_image) wine"
       else
         return 1
       fi ;;

@@ -209,6 +209,11 @@ run_logged() {
   mkdir -p "$(dirname "$log")"
   if ! "$@" >"$log" 2>&1; then
     tail -40 "$log" >&2
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+      # Annotations are readable through the public API without log access.
+      local msg; msg="$(tail -25 "$log" | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')"
+      echo "::error title=${TARGET:-pack.sh}: $(basename "$1")::${msg}"
+    fi
     error "Command failed (full log: $log): $*"
   fi
 }

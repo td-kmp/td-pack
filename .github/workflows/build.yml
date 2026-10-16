@@ -39,7 +39,7 @@ jobs:
     outputs:
       tdlib_version: ${{ steps.ver.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
 
@@ -68,19 +68,20 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || inputs.only == 'all' || inputs.only == 'apple'
     runs-on: macos-15
     name: ${{ matrix.target }}
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
         target: [macosArm64, macosX64, iosArm64, iosSimulatorArm64, iosX64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
 
       - name: Install tools
         run: brew install ninja ccache zstd
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
@@ -140,12 +141,13 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || inputs.only == 'all' || inputs.only == 'linux'
     runs-on: ubuntu-24.04
     name: ${{ matrix.target }}
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
         target: [linuxX64, linuxArm64, mingwX64, mingwArm64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
 
@@ -155,7 +157,7 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q ninja-build ccache gperf zstd
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
@@ -181,6 +183,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || inputs.only == 'all' || inputs.only == 'android'
     runs-on: ubuntu-24.04
     name: ${{ matrix.target }}
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -190,13 +193,13 @@ jobs:
           - { target: androidX64,   emulator: x86_64 }
           - { target: androidX86,   emulator: x86 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
 
       - *apt-tools
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
