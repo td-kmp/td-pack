@@ -1,17 +1,6 @@
---- a/example/android/CMakeLists.txt
-+++ b/example/android/CMakeLists.txt
-@@ -39,7 +39,7 @@
-   else()
-     target_link_libraries(tdjni PRIVATE Td::TdStatic)
-   endif()
--  target_compile_definitions(tdjni PRIVATE PACKAGE_NAME="org/drinkless/tdlib")
-+  target_compile_definitions(tdjni PRIVATE PACKAGE_NAME="io/xbot/tdlib")
- 
-   add_custom_command(TARGET tdjni POST_BUILD
-     COMMAND ${CMAKE_COMMAND} -E rename $<TARGET_FILE:tdjni> $<TARGET_FILE:tdjni>.debug
 --- a/example/java/td_jni.cpp
 +++ b/example/java/td_jni.cpp
-@@ -187,14 +187,12 @@ static jint register_native(JavaVM *vm) {
+@@ -187,13 +187,13 @@
    };
  
  #ifdef TD_JSON_JAVA
@@ -23,11 +12,11 @@
 -  register_method(client_class, "receive", "(D)Ljava/lang/String;", JsonClient_receive);
 -  register_method(client_class, "execute", "(Ljava/lang/String;)Ljava/lang/String;", JsonClient_execute);
 -  register_method(client_class, "setLogMessageHandler", "(IL" PACKAGE_NAME "/JsonClient$LogMessageHandler;)V",
--                  Client_nativeClientSetLogMessageHandler);
 +  register_method(client_class, "nativeCreateClientId", "()I", JsonClient_createClientId);
 +  register_method(client_class, "nativeSend", "(ILjava/lang/String;)V", JsonClient_send);
 +  register_method(client_class, "nativeReceive", "(D)Ljava/lang/String;", JsonClient_receive);
 +  register_method(client_class, "nativeExecute", "(Ljava/lang/String;)Ljava/lang/String;", JsonClient_execute);
++  register_method(client_class, "nativeSetLogMessageHandler", "(IL" PACKAGE_NAME "/NativeBridge$LogMessageHandler;)V",
+                   Client_nativeClientSetLogMessageHandler);
  #else
    auto td_api_class = td::jni::get_jclass(env, PACKAGE_NAME "/TdApi");
-   jfieldID commit_hash_field_id =

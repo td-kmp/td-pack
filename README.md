@@ -1,99 +1,130 @@
 # td-pack
 
-Prebuilt [TDLib](https://github.com/tdlib/td) libraries for all major platforms.
+Size-optimized prebuilt [TDLib](https://github.com/tdlib/td) native libraries for Kotlin
+Multiplatform, published as GitHub Release assets. This repo builds only the natives; the
+KMP library is assembled (cinterop, packaging, Maven publication) by a separate Gradle
+project that downloads these archives — the same split as JetBrains' skia-pack / skiko.
 
-## How it works
+`td` is a git submodule that `update.yml` moves to TDLib's latest master every week.
 
-The entire build runs in CI; nothing needs to be installed locally to get the binaries.
+## Artifacts
 
-## Supported platforms
+Targets use Kotlin/Native names. `tdlib.properties` in every archive records the TDLib
+version/commit and how to consume it.
 
-### Static libraries (Kotlin/Native, C/C++)
+### Kotlin/Native — `tdlib-<target>.tar.zst`
 
-| Platform | Architectures |
-|----------|--------------|
-| iOS | arm64, arm64-simulator, x86_64-simulator |
-| macOS | arm64, x86_64 |
-| Linux | x86_64, arm64 |
-| Windows | x64, arm64 |
+| Targets |
+|---|
+| `macosArm64` `macosX64` `iosArm64` `iosSimulatorArm64` `iosX64` `linuxX64` `linuxArm64` `mingwX64` |
 
-### JNI shared libraries (JVM / Android)
+```
+lib/libtdjson.a                       TDLib + OpenSSL + zlib, one prelinked object
+include/td/telegram/td_json_client.h
+include/td/telegram/td_log.h
+include/td/telegram/tdjson_export.h   always static (TDJSON_STATIC_DEFINE baked in)
+tdlib.properties                      headers, staticLibraries, linkerOpts
+```
 
-| Platform | Architectures |
-|----------|--------------|
-| Android | arm64-v8a, armeabi-v7a, x86_64, x86 |
-| macOS | arm64, x86_64 |
-| Linux | x86_64, arm64 |
-| Windows | x64, arm64 |
+The cinterop `.def` needs `headers`, `staticLibraries = libtdjson.a` and the `linkerOpts`
+from `tdlib.properties` (empty except on `mingwX64`). Keep `libraryPaths` out of the
+`.def` itself (pass `-libraryPath`): cinterop records it in the published klib.
 
-## Local build
+### JNI — `tdlib-jni-<platform>.tar.zst`
 
-You can also build locally using the included scripts.
+Named the way the JVM sees the platform (like skiko's runtime jars); Android by ABI, i.e.
+the `jniLibs/<abi>` directory of `androidTarget()`:
 
-**Unix (macOS / Linux / Android / iOS):**
+| Platforms | Built as `pack.sh` target |
+|---|---|
+| `macos-arm64` `macos-x64` | `macosArm64` `macosX64` |
+| `linux-x64` `linux-arm64` | `linuxX64` `linuxArm64` |
+| `windows-x64` `windows-arm64` | `mingwX64` `mingwArm64` |
+| `android-arm64-v8a` `android-armeabi-v7a` `android-x86_64` `android-x86` | `androidArm64` `androidArm32` `androidX64` `androidX86` |
+
+Windows libraries are built with MinGW-w64 toolchains (cross-compiled on Linux/macOS). That
+is fine for any Windows JVM: JNI is a plain C ABI, and the DLL carries its C++ runtime, so it
+only imports system DLLs (verified against Temurin under wine).
+
+`lib/libtdjsonjava.so` / `lib/libtdjsonjava.dylib` / `lib/tdjsonjava.dll` — natives for
+`io.xbot.tdlib.NativeBridge` (see `scripts/pack/jni.sh` and `tests/jni`):
+
+```kotlin
+package io.xbot.tdlib
+
+object NativeBridge {
+    fun interface LogMessageHandler { fun onLogMessage(verbosityLevel: Int, message: String) }
+
+    @JvmStatic external fun nativeCreateClientId(): Int
+    @JvmStatic external fun nativeSend(clientId: Int, request: String)
+    @JvmStatic external fun nativeReceive(timeout: Double): String?
+    @JvmStatic external fun nativeExecute(request: String): String?
+    @JvmStatic external fun nativeSetLogMessageHandler(maxVerbosityLevel: Int, handler: LogMessageHandler?)
+}
+```
+
+Only `JNI_OnLoad` is exported and the C++ runtime is linked in, so the library depends on
+OS libraries only. Android: minSdk 21, 16 KB page aligned, system `libz`.
+
+Close every client (wait for `authorizationStateClosed`) before the process exits:
+otherwise `atexit` tears OpenSSL down under TDLib's still-running threads.
+
+## How the archives get small
+
+* Everything (TDLib, OpenSSL, zlib) is compiled to LLVM bitcode with `-Os`.
+* **Prelink** runs whole-program LTO with only the tdjson C API exported
+  (`td/tdclientjson_export_list`): all other symbols are internalized and dead code is
+  deleted before shipping. Apple: `ld64 -r -exported_symbols_list`. ELF/COFF: lld LTO as a
+  shared library with `--lto-emit-llvm`, COMDATs of internal symbols dropped, compiled to
+  one object (ELF re-attaches OpenSSL's asm with `ld.lld -r`; MinGW OpenSSL is `no-asm`).
+* OpenSSL 3.5 (LTS) is configured with everything TDLib does not use disabled.
+* A klib can only carry static archives — Kotlin/Native's linker keeps `*.a`/`*.lib` from a
+  klib's `included/` directory and silently drops `.so`/`.dylib` — so the result stays a
+  plain `.a`, just with one object in it.
+* JNI libraries are one LTO link of the same bitcode with only `JNI_OnLoad` exported,
+  `--gc-sections`, `--icf=all`, stripped.
+
+## Toolchains
+
+| Targets | Host | Toolchain |
+|---|---|---|
+| Apple | macOS | Xcode; min macOS 12 / iOS 15 (Kotlin/Native's minimums) |
+| `linuxX64` `linuxArm64` `mingwX64` | macOS or Linux | Kotlin/Native's LLVM + its sysroots: glibc 2.19 / 2.25 + libstdc++ 8.3, msys2 mingw-w64 |
+| `mingwArm64` (JNI only, no K/N target) | macOS or Linux | [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (pinned) |
+| Android | macOS or Linux | NDK r28c |
+
+The Kotlin/Native version is pinned in `kotlin-native.version`. Its distribution and target
+sysroots are downloaded on demand into `~/.konan` — no Gradle needed.
+
+## Building locally
 
 ```bash
-./build.sh <target> <platform>
+./pack.sh <target> [step...]
+# steps: codegen zlib openssl tdlib | prelink package verify | jni jni-verify
 ```
 
-**Windows (on Windows host only):**
+Requirements: CMake, Ninja, perl, zstd, a JDK with headers (`JAVA_HOME`); ccache is used
+when present. Android needs the NDK (`ANDROID_NDK_ROOT`, or r28c in the Android SDK).
 
-```powershell
-.\build.ps1 -Target <target> -Platform <platform>
-```
+Outputs go to `out/` (archives) and `build/<target>/` (work trees, logs).
 
-### Targets and platforms
+### Verification
 
-| Platform | Targets |
-|----------|---------|
-| `macos-arm64` | tdlib, tdlib_jni |
-| `macos-x86_64` | tdlib, tdlib_jni |
-| `linux-x86_64` | tdlib, tdlib_jni |
-| `linux-arm64` | tdlib, tdlib_jni |
-| `windows-x64` | tdlib, tdlib_jni |
-| `windows-arm64` | tdlib, tdlib_jni |
-| `android-arm64-v8a` | tdlib_jni |
-| `android-armeabi-v7a` | tdlib_jni |
-| `android-x86_64` | tdlib_jni |
-| `android-x86` | tdlib_jni |
-| `ios-arm64` | tdlib |
+`verify` links `tests/smoke.c` and a cinterop + `konanc` program against the archive;
+`jni-verify` checks the JNI library's exports/dependencies (and Android's 16 KB alignment)
+and runs `tests/jni`. They run where the host can:
 
-### Prerequisites
+* natively (macOS, Linux);
+* a booted iOS simulator: `TDPACK_SIM_DEVICE=<udid>`;
+* Docker: Linux in the oldest distro matching the sysroot's glibc, MinGW under wine
+  (`tests/docker/wine.Dockerfile`), JNI in `eclipse-temurin`;
+* an Android device/emulator via `dalvikvm`: `TDPACK_ANDROID_SERIAL=<adb serial>`.
 
-**All platforms:**
-- [CMake](https://cmake.org) ≥ 3.19
-- [OpenSSL](https://www.openssl.org) (static libraries and headers)
-- `gperf`
-- C/C++ toolchain (GCC, Clang, or MSVC)
-
-**macOS:**
-- Xcode (provides the compiler, SDK, and `make`)
-- `gperf`, `cmake` via Homebrew (`brew install gperf cmake`)
-- Pre-built OpenSSL at `third_party/openssl/macos/<arch>/` — build it with `./scripts/build-openssl-macos.sh` (arm64 + x86_64, from source, no Rosetta)
-
-**Linux:**
-- OpenSSL dev package (`apt install libssl-dev` or equivalent)
-- `make`
-
-**Windows:**
-- Visual Studio 2022
-- The build script (`build.ps1`) automatically sets up [vcpkg](https://github.com/microsoft/vcpkg) and installs OpenSSL, zlib, and gperf through it
-
-**JNI targets (`tdlib_jni`):**
-- JDK with `JAVA_HOME` set
-
-**Android (`android-*`):**
-- Android NDK (set `ANDROID_NDK_ROOT` or `ANDROID_NDK`)
-- Pre-built OpenSSL for Android at `third_party/openssl/android/<abi>/` — build it with `./scripts/build-openssl-android.sh`
-
-**iOS (`ios-*`):**
-- Xcode
-- Pre-built OpenSSL for iOS at `third_party/openssl/ios/<platform>/` — build it with `./scripts/build-openssl-ios.sh`
-| `ios-arm64-simulator` | tdlib |
-| `ios-x86_64-simulator` | tdlib |
-
-Build outputs go to `out/<platform>/`.
+`TDPACK_NETWORK_TEST=1` adds `tests/network.c`: a full MTProto handshake with Telegram's
+test DC (an invalid `api_id` answered with `API_ID_INVALID`), which proves the trimmed
+OpenSSL still has everything TDLib needs.
 
 ## License
 
-TDLib is licensed under the Boost Software License. See [LICENSE_1_0.txt](https://github.com/tdlib/td/blob/master/LICENSE_1_0.txt).
+TDLib is licensed under the Boost Software License. See
+[LICENSE_1_0.txt](https://github.com/tdlib/td/blob/master/LICENSE_1_0.txt).
