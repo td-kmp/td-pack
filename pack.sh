@@ -12,8 +12,9 @@
 #   JNI                 : mingwArm64 androidArm64 androidArm32
 #                         androidX64 androidX86
 #
-# Steps (default: everything the target ships, in this order):
-#   codegen zlib openssl tdlib | prelink package verify | jni jni-verify
+# Steps (default: build test):
+#   build = codegen zlib openssl tdlib [prelink package] [jni]
+#   test  = [verify] [jni-verify]     (each check runs even if another fails)
 # =============================================================================
 
 source "$(dirname "${BASH_SOURCE[0]}")/scripts/pack/common.sh"
@@ -24,19 +25,27 @@ done
 [[ $# -ge 1 ]] || { sed -n '3,18p' "$0"; exit 1; }
 load_target "$1"; shift
 
-steps=("$@")
-if [[ ${#steps[@]} -eq 0 ]]; then
-  steps=(codegen zlib openssl tdlib)
-  [[ "$HAS_STATIC" == 1 ]] && steps+=(prelink package verify)
-  [[ "$HAS_JNI" == 1 ]] && steps+=(jni jni-verify)
-fi
+build_steps=(codegen zlib openssl tdlib)
+[[ "$HAS_STATIC" == 1 ]] && build_steps+=(prelink package)
+[[ "$HAS_JNI" == 1 ]] && build_steps+=(jni)
+test_steps=()
+[[ "$HAS_STATIC" == 1 ]] && test_steps+=(verify)
+[[ "$HAS_JNI" == 1 ]] && test_steps+=(jni-verify)
+
+steps=()
+[[ $# -gt 0 ]] || set -- build test
+for a in "$@"; do
+  case "$a" in
+    build) steps+=("${build_steps[@]}") ;;
+    test)  steps+=("${test_steps[@]}") ;;
+    *)     steps+=("$a") ;;
+  esac
+done
 
 git -C "$PROJECT_ROOT" submodule update --init --depth=1 td
 
-timings=""
-for step in "${steps[@]}"; do
-  step_start=$SECONDS
-  case "$step" in
+run_step() {
+  case "$1" in
     codegen) codegen ;;
     zlib)    build_zlib ;;
     openssl) build_openssl ;;
@@ -46,11 +55,28 @@ for step in "${steps[@]}"; do
     verify)  verify ;;
     jni)     build_jni ;;
     jni-verify) verify_jni ;;
-    *) error "Unknown step: $step" ;;
+    *) error "Unknown step: $1" ;;
   esac
+}
+
+timings="" failed=()
+for step in "${steps[@]}"; do
+  step_start=$SECONDS
+  [[ -n "${GITHUB_ACTIONS:-}" ]] && echo "::group::$TARGET · $step"
+  case "$step" in
+    verify|jni-verify)
+      # Checks run in a subshell: one failing does not skip the others.
+      if ! (run_step "$step"); then
+        failed+=("$step")
+        [[ -n "${GITHUB_ACTIONS:-}" ]] && echo "::warning title=$TARGET $step failed::see the $step group in the log"
+      fi ;;
+    *) run_step "$step" ;;
+  esac
+  [[ -n "${GITHUB_ACTIONS:-}" ]] && echo "::endgroup::"
   timings+="$step $((SECONDS - step_start))s, "
 done
 
 # Per-step durations as one CI annotation (readable without log access).
 [[ -n "${GITHUB_ACTIONS:-}" ]] && echo "::notice title=$TARGET timings::${timings%, }"
+[[ ${#failed[@]} -eq 0 ]] || error "Failed checks: ${failed[*]}"
 exit 0

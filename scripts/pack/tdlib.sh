@@ -16,7 +16,7 @@ codegen() {
   # shellcheck disable=SC2046
   run_logged "$build/configure.log" cmake -S "$TD_DIR" -B "$build" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DTD_GENERATE_SOURCE_FILES=ON $(launcher_args)
-  run_logged "$build/build.log" cmake --build "$build" -j"$NPROC"
+  run_progress "$build/build.log" "codegen" ninja cmake --build "$build" -j"$NPROC"
   rm -f "$build"/.done-*; touch "$stamp"
   success "Generated sources ready"
 }
@@ -91,6 +91,7 @@ build_tdlib() {
 
   run_logged "$BUILD_ROOT/logs/td-configure.log" cmake "${args[@]}"
   info "Building tdjson_static (log: $BUILD_ROOT/logs/td-build.log)"
-  run_logged "$BUILD_ROOT/logs/td-build.log" cmake --build "$build" --target tdjson_static -j"$NPROC"
+  run_progress "$BUILD_ROOT/logs/td-build.log" "tdlib" ninja \
+    cmake --build "$build" --target tdjson_static -j"$NPROC"
   success "TDLib archives → $build"
 }

@@ -127,7 +127,7 @@ build_jni() {
     mingw) flags+=(-Wl,-Xlink=-opt:lldltopartitions="$NPROC") ;;
   esac
   # shellcheck disable=SC2086
-  run_logged "$work/link.log" "$CXX_BIN" $TARGET_CFLAGS $OPT_FLAGS "${inputs[@]}" "${flags[@]}" -o "$out"
+  run_progress "$work/link.log" "jni (LTO link)" time "$CXX_BIN" $TARGET_CFLAGS $OPT_FLAGS "${inputs[@]}" "${flags[@]}" -o "$out"
   [[ "$FAMILY" == apple ]] && run_logged "$work/strip.log" xcrun strip -x "$out"
 
   local dest="$PROJECT_ROOT/out/jni-$(jni_artifact_name)"
@@ -223,7 +223,7 @@ verify_jni() {
     if [[ "$FAMILY" == mingw ]] && ! "${run[@]}" >"$work/run.log" 2>&1; then
       warn "Windows JVM under wine failed, retrying once"
     fi
-    grep -q "log handler: ok" "$work/run.log" 2>/dev/null || run_logged "$work/run.log" "${run[@]}"
+    grep -q "log handler: ok" "$work/run.log" 2>/dev/null || run_progress "$work/run.log" "jni test" time "${run[@]}"
     success "Java smoke test runs: $(grep -c . "$work/run.log" >/dev/null; grep -o 'optionValueString.*' "$work/run.log" | cut -c1-60), $(tail -1 "$work/run.log")"
   else
     info "No JVM for $TARGET on this host: checked the library, not run"

@@ -54,7 +54,11 @@ build_openssl() {
   # CC carries the full target triple + sysroot, so the configure target only
   # selects OpenSSL's asm flavour. Asm objects stay native code; prelink links
   # them next to the LTO bitcode.
-  local env_args=(CC="$CC_BIN $TARGET_CFLAGS") extra=()
+  # ccache too (OpenSSL's make does not go through CMake's launcher). Android's
+  # configs replace CC with the NDK wrapper by name, so it stays plain there.
+  local cc="$CC_BIN $TARGET_CFLAGS"
+  command -v ccache &>/dev/null && [[ "$FAMILY" != android ]] && cc="ccache $cc"
+  local env_args=(CC="$cc") extra=()
   if [[ "$FAMILY" != apple ]]; then
     env_args+=(AR="$LLVM_BIN/llvm-ar" RANLIB="$LLVM_BIN/llvm-ranlib")
   fi
@@ -75,7 +79,10 @@ build_openssl() {
   # Android's configs call the NDK's <triple><api>-clang wrappers by name.
   local make_env=(env)
   [[ "$FAMILY" == android ]] && make_env+=(PATH="$LLVM_BIN:$PATH")
-  run_logged "$work/build.log" "${make_env[@]}" make -j"$NPROC" build_libs
+  # Progress = compiled objects out of what a dry run says will be compiled.
+  local re=' -c -o [^ ]+\.o( |$)' total
+  total="$("${make_env[@]}" make -n build_libs 2>/dev/null | grep -cE -- "$re" || true)"
+  run_progress "$work/build.log" "openssl" "count:$total:$re" "${make_env[@]}" make -j"$NPROC" build_libs
   run_logged "$work/install.log" "${make_env[@]}" make install_dev
   popd >/dev/null
   rm -rf "$src"

@@ -46,7 +46,7 @@ prelink_macho() {
 
   # -u roots pull in only the archive members the API reaches; the exported
   # list makes ld64 hand libLTO everything else as internal.
-  run_logged "$work/ld.log" xcrun ld -r \
+  run_progress "$work/ld.log" "prelink (ld64 LTO)" time xcrun ld -r \
     -arch "$APPLE_ARCH" \
     -platform_version "$APPLE_PLATFORM" "$APPLE_MIN" "$SDK_VERSION" \
     -syslibroot "$SDK_PATH" \
@@ -77,11 +77,11 @@ lto_emit_module() {
   while IFS= read -r s; do roots+=(-u "$s"); done < <(api_symbols)
   local emit=--lto-emit-llvm
   [[ "$FAMILY" == mingw ]] && emit=-plugin-opt=emit-llvm   # MinGW driver spelling
-  run_logged "$work/lto.log" "$LLVM_BIN/ld.lld" "$@" "${roots[@]}" \
+  run_progress "$work/lto.log" "prelink (LTO)" time "$LLVM_BIN/ld.lld" "$@" "${roots[@]}" \
     "$emit" -o "$work/merged.bc"
-  run_logged "$work/comdat.log" strip_internal_comdats "$work/merged.bc" "$work/merged.flat.bc"
+  run_progress "$work/comdat.log" "prelink (comdats)" time strip_internal_comdats "$work/merged.bc" "$work/merged.flat.bc"
   # shellcheck disable=SC2086
-  run_logged "$work/codegen.log" "$CC_BIN" $TARGET_CFLAGS -Os -c "$work/merged.flat.bc" -o "$work/merged.o"
+  run_progress "$work/codegen.log" "prelink (codegen)" time "$CC_BIN" $TARGET_CFLAGS -Os -c "$work/merged.flat.bc" -o "$work/merged.o"
 }
 
 # After internalization ~50k inline functions are internal but still carry
@@ -100,20 +100,20 @@ strip_internal_comdats() {
     print' | "$LLVM_BIN/llvm-as" -o "$2"
 }
 
-# Native (non-bitcode) archive members: OpenSSL's hand-written asm.
+# Native (non-bitcode) archive members: OpenSSL's hand-written asm. Only
+# OpenSSL has any (TDLib and zlib are all C/C++, i.e. bitcode).
 collect_native_members() {
   local out="$1"; shift
   local dir; dir="$(dirname "$out")/native-members"
   rm -rf "$dir"; mkdir -p "$dir"
-  local a m objs=()
+  local a f objs=()
   for a in "$@"; do
-    while IFS= read -r m; do
-      # LLVM bitcode starts with 'BC' 0xC0DE; everything else is native code.
-      if [[ "$("$LLVM_BIN/llvm-ar" p "$a" "$m" | head -c 2)" != "BC" ]]; then
-        (cd "$dir" && "$LLVM_BIN/llvm-ar" x "$a" "$m")
-        objs+=("$dir/$m")
-      fi
-    done < <("$LLVM_BIN/llvm-ar" t "$a")
+    mkdir -p "$dir/$(basename "$a" .a)"
+    (cd "$dir/$(basename "$a" .a)" && "$LLVM_BIN/llvm-ar" x "$a")
+  done
+  for f in "$dir"/*/*; do
+    # LLVM bitcode starts with 'BC' 0xC0DE; everything else is native code.
+    [[ "$(head -c 2 "$f")" == "BC" ]] || objs+=("$f")
   done
   rm -f "$out"
   [[ ${#objs[@]} -gt 0 ]] && "$LLVM_BIN/llvm-ar" qcs "$out" "${objs[@]}"
@@ -131,7 +131,7 @@ prelink_elf() {
   # kept global by LTO (referenced from native code), so localize everything
   # but the API afterwards; --strip-unneeded then drops the now-unused names.
   # No --gc-sections: with -r it would also drop .eh_frame.
-  collect_native_members "$work/native.a" "$@"
+  collect_native_members "$work/native.a" "$PREFIX/lib/libssl.a" "$PREFIX/lib/libcrypto.a"
   local roots=()
   while IFS= read -r s; do roots+=(-u "$s"); done < "$work/api.txt"
   local native=()

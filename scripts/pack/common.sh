@@ -218,6 +218,80 @@ run_logged() {
   fi
 }
 
+# Like run_logged, with a progress bar while the command runs. Modes:
+#   ninja              percentage from ninja's "[done/total]" lines
+#   count:<N>:<ERE>    lines of the log matching ERE, out of N
+#   time               no percentage known (LTO links): elapsed time only
+# On a terminal the bar is redrawn in place; in CI (no TTY) a line is printed
+# every 5% (or every 30 s in time mode), since CI logs cannot redraw.
+run_progress() {
+  local log="$1" label="$2" mode="$3"; shift 3
+  mkdir -p "$(dirname "$log")"; : > "$log"
+  "$@" >"$log" 2>&1 &
+  local pid=$! start=$SECONDS rc=0
+  PROGRESS_LAST=-1
+  while kill -0 "$pid" 2>/dev/null; do
+    progress_tick "$log" "$label" "$mode" "$start"
+    sleep 2
+  done
+  if wait "$pid"; then rc=0; else rc=$?; fi
+  if [[ $rc -eq 0 ]]; then
+    progress_draw "$label" 100 $((SECONDS - start)) final
+    return 0
+  fi
+  [[ -t 1 ]] && echo
+  tail -40 "$log" >&2
+  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+    local msg; msg="$(tail -25 "$log" | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')"
+    echo "::error title=${TARGET:-pack.sh}: $label::${msg}"
+  fi
+  error "Command failed (full log: $log): $*"
+}
+
+# One progress update. PROGRESS_LAST remembers what CI output already showed
+# (last 5% bucket, or last 30 s slot in time mode).
+progress_tick() {
+  local log="$1" label="$2" mode="$3" start="$4"
+  local elapsed=$((SECONDS - start)) pct=-1 done_n total
+  case "$mode" in
+    ninja)
+      local m; m="$({ grep -oE '^\[[0-9]+/[0-9]+\]' "$log" 2>/dev/null || true; } | tail -1 | tr -d '[]')"
+      if [[ -n "$m" ]]; then done_n="${m%/*}"; total="${m#*/}"; pct=$((done_n * 100 / total)); fi ;;
+    count:*)
+      total="$(echo "$mode" | cut -d: -f2)"; local re="${mode#count:*:}"
+      done_n="$(grep -cE -- "$re" "$log" 2>/dev/null || true)"
+      [[ "$total" -gt 0 ]] && pct=$((done_n * 100 / total)) && [[ $pct -gt 99 ]] && pct=99 ;;
+  esac
+  if [[ -t 1 ]]; then
+    progress_draw "$label" "$pct" "$elapsed" inplace; return 0
+  fi
+  local slot
+  if [[ $pct -ge 0 ]]; then slot=$((pct / 5)); else slot=$((elapsed / 30)); fi
+  if [[ "$slot" != "$PROGRESS_LAST" && ( $pct -gt 0 || $elapsed -ge 30 ) ]]; then
+    progress_draw "$label" "$pct" "$elapsed" line
+  fi
+  PROGRESS_LAST="$slot"
+}
+
+# progress_draw <label> <pct|-1> <elapsed s> <inplace|line|final>
+progress_draw() {
+  local label="$1" pct="$2" secs="$3" how="$4" width=30 bar
+  local t; t="$(printf '%dm%02ds' $((secs / 60)) $((secs % 60)))"
+  if [[ $pct -ge 0 ]]; then
+    local fill=$((pct * width / 100))
+    bar="$(printf '%*s' "$fill" '' | tr ' ' '#')$(printf '%*s' $((width - fill)) '' | tr ' ' '-')"
+    bar="$(printf '[%s] %3d%%' "$bar" "$pct")"
+  else
+    bar="$(printf '[%s]  ...' "$(printf '%*s' "$width" '' | tr ' ' '~')")"
+  fi
+  case "$how" in
+    inplace) printf '\r  %-22s %s  %s ' "$label" "$bar" "$t" ;;
+    line)    printf '  %-22s %s  %s\n' "$label" "$bar" "$t" ;;
+    final)   [[ -t 1 ]] && printf '\r'
+             printf '  %-22s %s  %s\n' "$label" "$(printf '[%s] 100%%' "$(printf '%*s' "$width" '' | tr ' ' '#')")" "$t" ;;
+  esac
+}
+
 # Download a tarball into the shared source cache once.
 fetch() {
   local url="$1" file="$SRC_CACHE/$(basename "$1")"

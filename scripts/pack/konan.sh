@@ -61,7 +61,7 @@ ensure_konan_target_deps() {
   info "Provisioning Kotlin/Native dependencies for $kt" >&2
   local work="$PROJECT_ROOT/build/konan-provision"
   mkdir -p "$work"; echo 'fun main() {}' > "$work/main.kt"
-  run_logged "$work/$kt.log" "$KONAN_HOME/bin/konanc" -target "$kt" "$work/main.kt" -o "$work/$kt"
+  run_progress "$work/$kt.log" "K/N sysroot ($kt)" time "$KONAN_HOME/bin/konanc" -target "$kt" "$work/main.kt" -o "$work/$kt"
 }
 
 # The "dev" LLVM build (adds llvm-objcopy, llvm-nm, opt, ...). K/N already uses

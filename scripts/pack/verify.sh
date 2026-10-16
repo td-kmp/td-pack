@@ -92,7 +92,7 @@ verify() {
   runner="$(target_runner)" || true
   if [[ -n "$runner" ]]; then
     # shellcheck disable=SC2086
-    run_logged "$work/smoke-run.log" $runner "$work/smoke$exe"
+    run_progress "$work/smoke-run.log" "C smoke test" time $runner "$work/smoke$exe"
     success "C smoke test runs: $(tail -1 "$work/smoke-run.log" | cut -c1-100)"
     # Opt-in (needs network): full MTProto handshake against the test DC.
     if [[ "${TDPACK_NETWORK_TEST:-0}" == 1 ]]; then
@@ -101,7 +101,7 @@ verify() {
         -I"$OUT_DIR/include" "$OUT_DIR/lib/libtdjson.a" $linker_opts $runtime -o "$work/network"
       rm -rf "$work/network-db"
       # shellcheck disable=SC2086
-      run_logged "$work/network-run.log" $runner "$work/network$exe" "$work/network-db"
+      run_progress "$work/network-run.log" "network test" time $runner "$work/network$exe" "$work/network-db"
       success "Network test (test DC handshake): $(grep -o '"message":"[A-Z_]*"' "$work/network-run.log")"
     fi
   fi
@@ -115,15 +115,15 @@ headerFilter = td/telegram/*
 staticLibraries = libtdjson.a
 linkerOpts = $linker_opts
 EOF
-  run_logged "$work/cinterop.log" "$KONAN_HOME/bin/cinterop" -def "$work/tdjson.def" -pkg tdjson \
+  run_progress "$work/cinterop.log" "cinterop" time "$KONAN_HOME/bin/cinterop" -def "$work/tdjson.def" -pkg tdjson \
     -target "$kt" -compiler-option "-I$OUT_DIR/include" -libraryPath "$OUT_DIR/lib" \
     -o "$work/tdjson"
-  run_logged "$work/konanc.log" "$KONAN_HOME/bin/konanc" -target "$kt" -opt \
+  run_progress "$work/konanc.log" "konanc" time "$KONAN_HOME/bin/konanc" -target "$kt" -opt \
     "$PROJECT_ROOT/tests/kn/main.kt" -l "$work/tdjson.klib" -o "$work/kn-smoke"
   success "klib: $(du -h "$work/tdjson.klib" | cut -f1), K/N binary links"
   if [[ -n "$runner" ]]; then
     # shellcheck disable=SC2086
-    run_logged "$work/kn-run.log" $runner "$work/kn-smoke$kexe"
+    run_progress "$work/kn-run.log" "K/N smoke test" time $runner "$work/kn-smoke$kexe"
     success "K/N smoke test runs: $(tail -1 "$work/kn-run.log" | cut -c1-100)"
   fi
 }
