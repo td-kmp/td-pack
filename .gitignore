@@ -1,13 +1,12 @@
 .idea
 .claude
-build/
-CMakeUserPresets.json
+.DS_Store
 
 # TDLib submodule content (never committed — managed by git submodule)
 td/
 
-# Build outputs
-out/
+# Build trees, toolchains and downloads (pack.sh)
+build/
 
-# OpenSSL built locally — not committed
-third_party/openssl/
+# Packaged archives (pack.sh)
+out/
