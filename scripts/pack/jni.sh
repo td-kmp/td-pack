@@ -121,6 +121,11 @@ build_jni() {
              -static -static-libstdc++ -static-libgcc
              -lws2_32 -lmswsock -lnormaliz -lpsapi -lcrypt32 -lwinpthread) ;;
   esac
+  # Full-LTO (ELF/COFF) codegen is single-threaded unless split into partitions.
+  case "$FAMILY" in
+    linux) flags+=(-Wl,--lto-partitions="$NPROC") ;;
+    mingw) flags+=(-Wl,-Xlink=-opt:lldltopartitions="$NPROC") ;;
+  esac
   # shellcheck disable=SC2086
   run_logged "$work/link.log" "$CXX_BIN" $TARGET_CFLAGS $OPT_FLAGS "${inputs[@]}" "${flags[@]}" -o "$out"
   [[ "$FAMILY" == apple ]] && run_logged "$work/strip.log" xcrun strip -x "$out"

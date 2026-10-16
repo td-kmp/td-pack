@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - 'v*.*.*'
+    # Build-system work branches: full build + tests, no release.
+    branches:
+      - 'rework/**'
   workflow_dispatch:
     inputs:
       only:
@@ -22,6 +25,10 @@ env:
 
 permissions:
   contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────────
