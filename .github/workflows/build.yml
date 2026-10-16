@@ -189,7 +189,7 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────────
   #  Android JNI (NDK r28c, minSdk 21, 16 KB pages) for androidTarget()'s
-  #  jniLibs. x86/x86_64 also run on an emulator; the ARM ABIs are checked
+  #  jniLibs. x86_64 also runs on an emulator; the other ABIs are checked
   #  (exports, deps, alignment) but not run.
   # ─────────────────────────────────────────────────────────────────────────────
   android:
@@ -204,8 +204,9 @@ jobs:
           - { target: androidArm64, emulator: '',     api: '' }
           - { target: androidArm32, emulator: '',     api: '' }
           - { target: androidX64,   emulator: x86_64, api: 30 }
-          # There is no API 30 x86 "default" system image; 29 is the last one.
-          - { target: androidX86,   emulator: x86,    api: 29 }
+          # No usable x86 emulator on GitHub's runners; x86 is the same NDK
+          # build as x86_64, which does run, so library checks are enough.
+          - { target: androidX86,   emulator: '',     api: '' }
     steps:
       - uses: actions/checkout@v5
         with:
@@ -236,7 +237,7 @@ jobs:
       - *upload
 
       # Library checks (exports, dependencies, 16 KB alignment) everywhere;
-      # x86/x86_64 additionally run on an emulator below.
+      # x86_64 additionally runs on an emulator below.
       - name: Test (library checks)
         continue-on-error: true
         run: ./pack.sh ${{ matrix.target }} test
