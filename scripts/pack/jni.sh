@@ -248,11 +248,15 @@ run_android_jni_smoke() {
   "${adb[@]}" shell "rm -rf $dir && mkdir -p $dir" >/dev/null
   "${adb[@]}" push "$work/classes.dex" "$lib" "$dir/" >/dev/null
   # Multilib images default dalvikvm to 64-bit, which cannot load a 32-bit .so.
+  # ANDROID_DATA points dalvikvm at a writable dalvik-cache (older images fail
+  # silently without one when run from the shell); logcat tail on failure.
   local vm
   case "$ANDROID_ABI" in armeabi-v7a|x86) vm=dalvikvm32 ;; *) vm=dalvikvm64 ;; esac
   run_logged "$work/run.log" "${adb[@]}" shell "VM=dalvikvm;
     for c in /apex/com.android.art/bin/$vm /system/bin/$vm; do [ -x \$c ] && VM=\$c && break; done;
-    echo VM=\$VM; cd $dir && \$VM -cp classes.dex JniSmoke $dir/$(jni_library_name) && echo EXIT_OK"
+    echo VM=\$VM; cd $dir && mkdir -p dalvik-cache &&
+    ANDROID_DATA=$dir \$VM -cp classes.dex JniSmoke $dir/$(jni_library_name) 2>&1; rc=\$?;
+    [ \$rc -eq 0 ] && echo EXIT_OK || { echo \"dalvikvm exit code \$rc\"; logcat -d -t 40 2>/dev/null | grep -iE 'dalvikvm|art|JniSmoke|linker' | tail -20; exit \$rc; }"
   grep -q EXIT_OK "$work/run.log" || { tail -20 "$work/run.log" >&2; error "Android smoke test failed"; }
   success "Java smoke test runs on $TDPACK_ANDROID_SERIAL ($ANDROID_ABI): $(grep -o 'optionValueString[^,]*,[^,]*' "$work/run.log")"
 }

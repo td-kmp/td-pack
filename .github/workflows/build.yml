@@ -19,6 +19,9 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CCACHE_DIR: ${{ github.workspace }}/.ccache
   CCACHE_MAXSIZE: 2G
+  # Compilers are re-installed on every run (e.g. the NDK by setup-ndk), so
+  # their mtime changes; hash the compiler itself to keep cache hits.
+  CCACHE_COMPILERCHECK: content
   # Every job also runs tests/network.c (MTProto handshake against the test DC)
   # wherever the target can run.
   TDPACK_NETWORK_TEST: 1
