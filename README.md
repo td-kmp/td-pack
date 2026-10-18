@@ -77,30 +77,29 @@ npm/yarn install it from its release URL; no npm registry involved.
 
 ```
 package.json
-index.mjs, index.d.ts      the tdjson API as an ES module
+index.mjs, index.d.ts      the tdjson API (td_json_client.h) for the page
+worker.mjs                 the Web Worker TDLib runs in
 td_wasm.js, td_wasm.wasm   Emscripten output (EXPORT_ES6 factory, web + worker)
 tdlib.properties
 ```
 
 ```js
-import * as td from '@td-kmp/tdlib-wasm'; // top-level await: instantiated on import
+import * as td from '@td-kmp/tdlib-wasm';
 
-td.execute(request);                       // string | null
-const id = td.createClientId();
-td.send(id, request);
-td.receive();                              // string | null, never blocks
-td.getTimeout();                           // seconds until receive() is due again
+const id = td.createClientId();            // synchronous
+td.send(id, request);                      // synchronous, in order
+await td.receive(timeout);                 // string | null: td_receive, one receiver at a time
+await td.execute(request);                 // string | null
 td.setLogMessageHandler(maxVerbosityLevel, (level, message) => {} /* or null */);
-td.setWakeUpHandler(() => {});             // a socket event: receive() is due now
-td.FS; td.IDBFS;                           // Emscripten FS: databases live in MEMFS unless
-                                           // mounted with IDBFS and synced with FS.syncfs
 ```
 
-TDLib's Emscripten build is single-threaded (no `SharedArrayBuffer`, so no COOP/COEP
-headers): the page drives it, draining `receive()` and polling again after `send()`, after
-`getTimeout()` seconds, or when the wake-up handler fires. It connects to Telegram over `wss://` (`*.web.telegram.org/apiws`).
-`td_wasm.js` is imported relative to `index.mjs` and finds `td_wasm.wasm` through
-`import.meta.url`, which bundlers (webpack 5) follow.
+TDLib runs in a Web Worker started on first use (`new Worker(new URL('./worker.mjs',
+import.meta.url))`, which bundlers such as webpack 5 follow, as they follow
+`td_wasm.wasm`): the page never blocks on it and needs no setup. Its Emscripten build is
+single-threaded (no `SharedArrayBuffer`, so no COOP/COEP headers); the Worker polls TDLib
+on its timers, after requests and on socket events, and posts events to the page. TDLib
+connects to Telegram over `wss://` (`*.web.telegram.org/apiws`). Databases live in memory
+(MEMFS) for now.
 
 ## How the archives get small
 
@@ -155,7 +154,7 @@ and runs `tests/jni`. They run where the host can:
   (`tests/docker/wine.Dockerfile`), JNI in `eclipse-temurin`;
 * an Android device/emulator via `dalvikvm`: `TDPACK_ANDROID_SERIAL=<adb serial>`;
 * `web-verify`: `tests/web/smoke.mjs` in headless Chrome, loading the package over HTTP as
-  a bundle would (execute, log handler, IDBFS, a client round-trip).
+  a bundle would (execute, log handler, client round-trips through the Worker).
 
 `TDPACK_NETWORK_TEST=1` adds `tests/network.c`: a full MTProto handshake with Telegram's
 test DC (an invalid `api_id` answered with `API_ID_INVALID`), which proves the trimmed

@@ -359,8 +359,8 @@ jobs:
             Android (`jniLibs/<abi>`): `android-arm64-v8a` `android-armeabi-v7a` `android-x86_64` `android-x86`.
 
             **Web** — `tdlib-web.tar.zst`: an npm package (`@td-kmp/tdlib-wasm`) for Kotlin/JS and
-            Kotlin/Wasm: `index.mjs` (instantiates the module with top-level await, exports the tdjson
-            API), `td_wasm.{js,wasm}` (Emscripten, single-threaded), `tdlib.properties`. The same package as
+            Kotlin/Wasm: `index.mjs` (the tdjson API), `worker.mjs` (the Web Worker TDLib runs in),
+            `td_wasm.{js,wasm}` (Emscripten, single-threaded), `tdlib.properties`. The same package as
             `tdlib-web.tgz`, installable by URL (`npm install <release URL>/tdlib-web.tgz`).
 
             **Schema** — `td-api-v${{ needs.version.outputs.tdlib_version }}.tl`.

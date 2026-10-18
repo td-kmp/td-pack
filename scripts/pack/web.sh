@@ -2,15 +2,16 @@
 # Web: TDLib as one Emscripten module, shipped as an npm package in
 # out/tdlib-web.tar.zst:
 #   package.json
-#   index.mjs, index.d.ts   ES module: instantiates the module with top-level
-#                           await and exports the tdjson API (web/index.mjs)
+#   index.mjs, index.d.ts   the tdjson API (td_json_client.h) for the page;
+#                           receive and execute return promises (web/index.mjs)
+#   worker.mjs              the Web Worker TDLib runs in, started on first use
 #   td_wasm.js, td_wasm.wasm  Emscripten output (an EXPORT_ES6 factory)
 #   tdlib.properties
 # and the same package as out/tdlib-web.tgz (npm pack format): npm and yarn
 # install it straight from its release URL, so no npm registry is needed.
 #
-# The API is td_emscripten.cpp's: TDLib has no threads here, so receive()
-# never blocks and getTimeout() says when to poll again. td's own td_wasm
+# Inside the Worker the API is td_emscripten.cpp's: TDLib has no threads, so
+# td_receive never blocks and getTimeout() says when to poll again. td's own td_wasm
 # target is not used: its flags and --post-js target the Emscripten 3.1.1
 # runtime, so web_link links the same objects with settings of its own.
 
@@ -50,7 +51,7 @@ web_link() {
 web_package() {
   banner "Package — $TARGET"
   local version; version="$(td_version)"
-  cp "$PROJECT_ROOT/web/index.mjs" "$PROJECT_ROOT/web/index.d.ts" "$OUT_DIR/"
+  cp "$PROJECT_ROOT/web/index.mjs" "$PROJECT_ROOT/web/index.d.ts" "$PROJECT_ROOT/web/worker.mjs" "$OUT_DIR/"
   sed "s/@VERSION@/$version/" "$PROJECT_ROOT/web/package.json" > "$OUT_DIR/package.json"
 
   cat > "$OUT_DIR/tdlib.properties" <<EOF

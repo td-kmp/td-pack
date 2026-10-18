@@ -1,53 +1,98 @@
-// TDLib's JSON interface for the browser. Importing this module downloads and
-// instantiates td_wasm.wasm (top-level await), so everything below is
-// synchronous; import './td_wasm.js' instead to instantiate it yourself.
+// TDLib's JSON interface (td_json_client.h) for the browser. TDLib runs in a
+// Web Worker (worker.mjs) that is started on first use, so nothing here waits
+// for td_wasm.wasm to load: createClientId and send are synchronous (messages
+// reach the Worker in order), receive and execute return promises.
 //
-// TDLib has no threads here: receive() never blocks. Call it again after
-// send(), after getTimeout() seconds, and when the wake-up handler fires.
-import createTdlibModule from './td_wasm.js';
+// receive(timeout) is td_receive's pull model: the next event of any client
+// (with "@client_id", and "@extra" for answers), or null after timeout
+// seconds. Like td_receive it allows one receiver at a time.
 
-export const module = await createTdlibModule();
+let worker = null;
+let failure = null;
+let nextClientId = 1;
+let nextExecuteId = 1;
+const executions = new Map();
+const events = [];
+let waiter = null;
+let logHandler = null;
 
-const string = (pointer) => (pointer === 0 ? null : module.UTF8ToString(pointer));
+function onMessage(message) {
+  switch (message.type) {
+    case 'events':
+      events.push(...message.events);
+      if (waiter !== null) waiter.resolve(events.shift());
+      break;
+    case 'executed':
+      executions.get(message.id)?.resolve(message.result);
+      executions.delete(message.id);
+      break;
+    case 'log':
+      logHandler?.(message.level, message.message);
+      break;
+    case 'error':
+      fail(new Error(message.message));
+      break;
+  }
+}
 
-const createClientIdImpl = module.cwrap('td_emscripten_create_client_id', 'number', []);
-const sendImpl = module.cwrap('td_emscripten_send', null, ['number', 'string']);
-const receiveImpl = module.cwrap('td_emscripten_receive', 'number', []);
-const executeImpl = module.cwrap('td_emscripten_execute', 'number', ['string']);
-const getTimeoutImpl = module.cwrap('td_emscripten_get_timeout', 'number', []);
-const setLogMessageCallback = module.cwrap('td_set_log_message_callback', null, ['number', 'number']);
+// TDLib is gone after a failure: every pending and later call rejects.
+function fail(error) {
+  failure ??= error;
+  executions.forEach(({ reject }) => reject(failure));
+  executions.clear();
+  waiter?.reject(failure);
+}
 
-export const createClientId = () => createClientIdImpl();
-export const send = (clientId, request) => sendImpl(clientId, request);
-export const receive = () => string(receiveImpl());
-export const execute = (request) => string(executeImpl(request));
-export const getTimeout = () => getTimeoutImpl();
+function post(message) {
+  if (failure !== null) throw failure;
+  if (worker === null) {
+    worker = new Worker(new URL('./worker.mjs', import.meta.url), { type: 'module', name: 'tdlib' });
+    worker.onmessage = ({ data }) => onMessage(data);
+    worker.onerror = (e) => fail(new Error(`TDLib worker failed: ${e.message ?? 'unknown error'}`));
+  }
+  worker.postMessage(message);
+}
 
-let logCallback = 0;
+export function createClientId() {
+  const clientId = nextClientId++;
+  post({ type: 'create', clientId });
+  return clientId;
+}
 
-// The handler runs synchronously inside TDLib; null removes it.
+export function send(clientId, request) {
+  post({ type: 'send', clientId, request });
+}
+
+export function receive(timeout) {
+  if (failure !== null) return Promise.reject(failure);
+  if (events.length > 0) return Promise.resolve(events.shift());
+  if (waiter !== null) return Promise.reject(new Error('receive() is already waiting: TDLib allows one receiver'));
+  return new Promise((resolve, reject) => {
+    const done = () => { clearTimeout(timer); waiter = null; };
+    const timer = setTimeout(() => { done(); resolve(null); }, Math.max(timeout, 0) * 1000);
+    waiter = {
+      resolve: (event) => { done(); resolve(event); },
+      reject: (error) => { done(); reject(error); },
+    };
+  });
+}
+
+export function execute(request) {
+  return new Promise((resolve, reject) => {
+    const id = nextExecuteId++;
+    executions.set(id, { resolve, reject });
+    try {
+      post({ type: 'execute', id, request });
+    } catch (e) {
+      executions.delete(id);
+      reject(e);
+    }
+  });
+}
+
+// Messages are logged in the Worker and delivered here afterwards, before the
+// answer of the request that logged them. null removes the handler.
 export function setLogMessageHandler(maxVerbosityLevel, handler) {
-  const previous = logCallback;
-  logCallback = handler === null
-    ? 0
-    : module.addFunction((level, message) => handler(level, module.UTF8ToString(message)), 'vii');
-  setLogMessageCallback(handler === null ? 0 : maxVerbosityLevel, logCallback);
-  if (previous !== 0) module.removeFunction(previous);
+  logHandler = handler;
+  post({ type: 'setLogMessageHandler', maxVerbosityLevel, enabled: handler !== null });
 }
-
-// TDLib's sockets are WebSockets: when one opens, closes or gets data,
-// receive() is due now, not after getTimeout().
-let wakeUpHandler = null;
-for (const event of ['open', 'message', 'close', 'error']) {
-  module.websocket.on(event, () => wakeUpHandler?.());
-}
-
-// The handler only signals; call receive() from the event loop, not inside it. null removes it.
-export function setWakeUpHandler(handler) {
-  wakeUpHandler = handler;
-}
-
-// Emscripten's file system. TDLib's files live in memory (MEMFS) unless a
-// directory is mounted with IDBFS and synced with FS.syncfs.
-export const FS = module.FS;
-export const IDBFS = module.IDBFS;

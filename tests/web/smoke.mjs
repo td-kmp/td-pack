@@ -1,6 +1,6 @@
-// Browser counterpart of tests/smoke.c (and, with ?network=1, tests/network.c):
-// synchronous execute, the log message callback, IDBFS, then a client
-// round-trip driven by receive(), getTimeout() and the wake-up handler.
+// Browser counterpart of tests/smoke.c (and, with ?network=1, tests/network.c),
+// against the package's page API: TDLib runs in its Worker, execute and receive
+// are promises, createClientId and send are synchronous.
 // Reports one "TDPACK_RESULT ok|fail ..." console line for run.mjs.
 import * as td from './tdlib/index.mjs';
 
@@ -9,54 +9,41 @@ const network = new URLSearchParams(location.search).get('network') === '1';
 class Failure extends Error {}
 const check = (condition, message) => { if (!condition) throw new Failure(message); };
 
-// Polls TDLib like a consumer's event loop: drain receive(), then wait for
-// getTimeout() or a wake-up from a socket, whichever comes first.
-let wakeUp = null;
-td.setWakeUpHandler(() => wakeUp?.());
-const nextPoll = () => new Promise((resolve) => {
-  const timer = setTimeout(resolve, Math.min(Math.max(td.getTimeout(), 0), 1) * 1000);
-  wakeUp = () => { clearTimeout(timer); resolve(); };
-});
-
+// One receiver, like td_receive: the next event of any client until the predicate matches.
 async function receiveUntil(predicate, seconds) {
   for (const end = Date.now() + seconds * 1000; Date.now() < end;) {
-    for (let event; (event = td.receive()) !== null;) {
-      if (predicate(event)) return event;
-    }
-    await nextPoll();
+    const event = await td.receive(1.0);
+    if (event !== null && predicate(event)) return event;
   }
   return null;
 }
 
 async function closeClient(client) {
   td.send(client, '{"@type":"close"}');
-  await receiveUntil((e) => e.includes('authorizationStateClosed'), 10);
+  await receiveUntil((e) => e.includes('authorizationStateClosed') && e.includes(`"@client_id":${client}`), 10);
 }
 
 async function smoke() {
-  td.execute('{"@type":"setLogVerbosityLevel","new_verbosity_level":1}');
+  await td.execute('{"@type":"setLogVerbosityLevel","new_verbosity_level":1}');
 
-  const entities = td.execute('{"@type":"getTextEntities","text":"@telegram /test https://telegram.org"}');
+  const entities = await td.execute('{"@type":"getTextEntities","text":"@telegram /test https://telegram.org"}');
   check(entities?.includes('textEntityTypeUrl'), `getTextEntities failed: ${entities}`);
-  check(td.execute('{"@type":"getOption","name":"no_such_option"}') !== null, 'execute returned null');
 
+  // Log messages arrive from the Worker before the answer of the request that logged them.
   const logged = [];
   td.setLogMessageHandler(1, (level, message) => logged.push([level, message]));
-  td.execute('{"@type":"addLogMessage","verbosity_level":1,"text":"td-pack log check"}');
+  await td.execute('{"@type":"addLogMessage","verbosity_level":1,"text":"td-pack log check"}');
   td.setLogMessageHandler(0, null);
   check(logged.some(([level, message]) => level === 1 && message.includes('td-pack log check')),
     `log message handler got ${JSON.stringify(logged)}`);
 
-  td.FS.mkdir('/idb');
-  td.FS.mount(td.IDBFS, {}, '/idb');
-  td.FS.writeFile('/idb/probe', 'ok');
-  await new Promise((resolve, reject) => td.FS.syncfs(false, (e) => (e ? reject(e) : resolve())));
-
-  const client = td.createClientId();
-  td.send(client, '{"@type":"getOption","name":"version","@extra":42}');
+  const first = td.createClientId();
+  const second = td.createClientId();
+  check(first !== second, `client ids: ${first}, ${second}`);
+  td.send(second, '{"@type":"getOption","name":"version","@extra":42}');
   const answer = await receiveUntil((e) => e.includes('"@extra":42'), 30);
-  check(answer?.includes('optionValueString'), `getOption answer: ${answer}`);
-  await closeClient(client);
+  check(answer?.includes('optionValueString') && answer.includes(`"@client_id":${second}`), `getOption answer: ${answer}`);
+  await closeClient(second);
   return JSON.parse(answer).value;
 }
 
@@ -66,7 +53,7 @@ async function networkCheck() {
   const client = td.createClientId();
   td.send(client, '{"@type":"getOption","name":"version"}');
   const params = JSON.stringify({
-    '@type': 'setTdlibParameters', use_test_dc: true, database_directory: '/idb/network',
+    '@type': 'setTdlibParameters', use_test_dc: true, database_directory: '/tdlib-network',
     use_message_database: false, use_secret_chats: false, api_id: 1,
     api_hash: '00000000000000000000000000000000', system_language_code: 'en',
     device_model: 'td-pack smoke', application_version: '1.0',
@@ -86,7 +73,7 @@ async function networkCheck() {
 try {
   const version = await smoke();
   const handshake = network ? `, test DC: ${await networkCheck()}` : '';
-  console.log(`TDPACK_RESULT ok: TDLib ${version}${handshake}`);
+  console.log(`TDPACK_RESULT ok: TDLib ${version} (in a Worker)${handshake}`);
 } catch (e) {
   console.log(`TDPACK_RESULT fail: ${e instanceof Failure ? e.message : e?.stack ?? e}`);
 }
