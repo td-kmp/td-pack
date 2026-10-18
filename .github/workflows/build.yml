@@ -1,0 +1,373 @@
+name: Build TDLib
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+    # Build-system work branches: full build + tests, no release.
+    branches:
+      - 'rework/**'
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Which job group to build (for fast iteration). Tag pushes always build all."
+        type: choice
+        default: all
+        options: [all, apple, linux, android, web]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 2G
+  # Compilers are re-installed on every run (e.g. the NDK by setup-ndk), so
+  # their mtime changes; hash the compiler itself to keep cache hits.
+  CCACHE_COMPILERCHECK: content
+  # Every job also runs tests/network.c (MTProto handshake against the test DC)
+  # wherever the target can run.
+  TDPACK_NETWORK_TEST: 1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  #  TDLib version from the submodule + versioned td_api.tl
+  # ─────────────────────────────────────────────────────────────────────────────
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tdlib_version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Extract TDLib version
+        id: ver
+        run: |
+          VERSION=$(grep -oP 'project\(TDLib\s+VERSION\s+\K[0-9.]+' td/CMakeLists.txt || echo "unknown")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "TDLib version: $VERSION"
+
+      - name: Prepare versioned td_api.tl
+        run: |
+          mkdir -p td-api-schema
+          cp td/td/generate/scheme/td_api.tl "td-api-schema/td-api-v${{ steps.ver.outputs.version }}.tl"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: td-api-schema
+          path: td-api-schema/
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  #  Apple: Kotlin/Native static archives (+ JNI for macOS)
+  # ─────────────────────────────────────────────────────────────────────────────
+  apple:
+    if: github.event_name != 'workflow_dispatch' || inputs.only == 'all' || inputs.only == 'apple'
+    runs-on: macos-15
+    name: ${{ matrix.target }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [macosArm64, macosX64, iosArm64, iosSimulatorArm64, iosX64]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Install tools
+        run: brew install ninja ccache zstd
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - &cache-konan
+        name: Cache Kotlin/Native
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('kotlin-native.version') }}
+
+      - &cache-sources
+        name: Cache sources and toolchains
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/src
+            build/toolchains
+          key: src-${{ runner.os }}-${{ hashFiles('scripts/pack/common.sh') }}
+
+      - &cache-ccache
+        name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ matrix.target }}-${{ github.sha }}
+          restore-keys: ccache-${{ matrix.target }}-
+
+      - &build
+        name: Build
+        run: ./pack.sh ${{ matrix.target }} build
+
+      # Archives are uploaded before any check runs: a failing check (or a
+      # flaky emulator) never costs the build itself.
+      - &upload
+        name: Upload archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            out/*.tar.zst
+            out/*.tgz
+          if-no-files-found: error
+
+      - name: Boot an iOS simulator
+        if: matrix.target == 'iosSimulatorArm64'
+        continue-on-error: true
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          print(next(d["udid"] for runtime, ds in devices.items() if "iOS" in runtime for d in ds if "iPhone" in d["name"]))')
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          echo "TDPACK_SIM_DEVICE=$UDID" >> "$GITHUB_ENV"
+
+      # Checks report failures as warnings (annotated) instead of failing the job.
+      - &test
+        name: Test
+        continue-on-error: true
+        run: ./pack.sh ${{ matrix.target }} test
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  #  Linux + Windows (MinGW): cross-built on one Linux host against
+  #  Kotlin/Native's sysroots (mingwArm64: llvm-mingw, JNI only).
+  #  Tests run in Docker: arm64 through QEMU, Windows under wine.
+  # ─────────────────────────────────────────────────────────────────────────────
+  linux:
+    if: github.event_name != 'workflow_dispatch' || inputs.only == 'all' || inputs.only == 'linux'
+    runs-on: ubuntu-24.04
+    name: ${{ matrix.target }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [linuxX64, linuxArm64, mingwX64, mingwArm64]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - &apt-tools
+        name: Install tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q ninja-build ccache gperf zstd
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up QEMU (arm64 containers)
+        if: matrix.target == 'linuxArm64'
+        uses: docker/setup-qemu-action@v3
+
+      - *cache-konan
+      - *cache-sources
+      - *cache-ccache
+
+      - *build
+      - *upload
+      - *test
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  #  Android JNI (NDK r28c, minSdk 21, 16 KB pages) for androidTarget()'s
+  #  jniLibs. x86_64 also runs on an emulator; the other ABIs are checked
+  #  (exports, deps, alignment) but not run.
+  # ─────────────────────────────────────────────────────────────────────────────
+  android:
+    if: github.event_name != 'workflow_dispatch' || inputs.only == 'all' || inputs.only == 'android'
+    runs-on: ubuntu-24.04
+    name: ${{ matrix.target }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: androidArm64, emulator: '',     api: '' }
+          - { target: androidArm32, emulator: '',     api: '' }
+          - { target: androidX64,   emulator: x86_64, api: 30 }
+          # No usable x86 emulator on GitHub's runners; x86 is the same NDK
+          # build as x86_64, which does run, so library checks are enough.
+          - { target: androidX86,   emulator: '',     api: '' }
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - *apt-tools
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up NDK r28c
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r28c
+          link-to-sdk: true
+
+      - *cache-sources
+      - *cache-ccache
+
+      - name: Build
+        run: ./pack.sh ${{ matrix.target }} build
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+
+      - *upload
+
+      # Library checks (exports, dependencies, 16 KB alignment) everywhere;
+      # x86_64 additionally runs on an emulator below.
+      - name: Test (library checks)
+        continue-on-error: true
+        run: ./pack.sh ${{ matrix.target }} test
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+
+      - name: Enable KVM
+        if: matrix.emulator != ''
+        continue-on-error: true
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Test on an emulator
+        if: matrix.emulator != ''
+        continue-on-error: true
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+          TDPACK_ANDROID_SERIAL: emulator-5554
+        with:
+          api-level: ${{ matrix.api }}
+          arch: ${{ matrix.emulator }}
+          target: default
+          emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot
+          script: ./pack.sh ${{ matrix.target }} test
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  #  Web: one Emscripten module (wasm32) as an npm package, for Kotlin/JS and
+  #  Kotlin/Wasm. Tested in the runner's headless Chrome.
+  # ─────────────────────────────────────────────────────────────────────────────
+  web:
+    if: github.event_name != 'workflow_dispatch' || inputs.only == 'all' || inputs.only == 'web'
+    runs-on: ubuntu-24.04
+    name: ${{ matrix.target }}
+    timeout-minutes: 75
+    strategy:
+      matrix:
+        target: [web]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - *apt-tools
+
+      # tests/web/run.mjs needs Node's built-in WebSocket.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - *cache-sources
+      - *cache-ccache
+
+      - *build
+      - *upload
+      - *test
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  #  GitHub Release (tag pushes only)
+  # ─────────────────────────────────────────────────────────────────────────────
+  release:
+    needs: [version, apple, linux, android, web]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release files
+        run: |
+          mkdir -p release
+          find artifacts \( -name '*.tar.zst' -o -name '*.tgz' \) -exec cp {} release/ \;
+          cp artifacts/td-api-schema/*.tl release/
+          ls -lh release/
+
+      - name: Verify all packages are present
+        run: |
+          STATIC=(macosArm64 macosX64 iosArm64 iosSimulatorArm64 iosX64 linuxX64 linuxArm64 mingwX64)
+          JNI=(macos-arm64 macos-x64 linux-x64 linux-arm64 windows-x64 windows-arm64
+               android-arm64-v8a android-armeabi-v7a android-x86_64 android-x86)
+          missing=0
+          for f in "${STATIC[@]/#/tdlib-}" "${JNI[@]/#/tdlib-jni-}" tdlib-web; do
+            if [[ -f "release/$f.tar.zst" ]]; then echo "  ✓ $f.tar.zst"
+            else echo "  ✗ MISSING: $f.tar.zst"; missing=$((missing + 1)); fi
+          done
+          SCHEMA="td-api-v${{ needs.version.outputs.tdlib_version }}.tl"
+          [[ -f "release/$SCHEMA" ]] || { echo "  ✗ MISSING: $SCHEMA"; missing=$((missing + 1)); }
+          [[ $missing -eq 0 ]] || { echo "ERROR: $missing file(s) missing"; exit 1; }
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.version.outputs.tdlib_version }}
+          name: TDLib ${{ needs.version.outputs.tdlib_version }}
+          body: |
+            Prebuilt TDLib **${{ needs.version.outputs.tdlib_version }}** for Kotlin Multiplatform.
+
+            ```
+            https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.tdlib_version }}/{asset}.tar.zst
+            ```
+
+            **Kotlin/Native** — `tdlib-<target>.tar.zst`: `lib/libtdjson.a` (TDLib + OpenSSL + zlib
+            as one prelinked object), `include/td/telegram/*.h`, `tdlib.properties` (cinterop
+            `headers` / `staticLibraries` / `linkerOpts`).
+            Targets: `macosArm64` `macosX64` `iosArm64` `iosSimulatorArm64` `iosX64`
+            `linuxX64` `linuxArm64` `mingwX64`.
+
+            **JNI** — `tdlib-jni-<platform>.tar.zst`: `lib/libtdjsonjava.{so,dylib}` / `lib/tdjsonjava.dll`
+            for `io.xbot.tdlib.NativeBridge`, `tdlib.properties`.
+            JVM: `macos-arm64` `macos-x64` `linux-x64` `linux-arm64` `windows-x64` `windows-arm64`.
+            Android (`jniLibs/<abi>`): `android-arm64-v8a` `android-armeabi-v7a` `android-x86_64` `android-x86`.
+
+            **Web** — `tdlib-web.tar.zst`: an npm package (`@td-kmp/tdlib-wasm`) for Kotlin/JS and
+            Kotlin/Wasm: `index.mjs` (instantiates the module with top-level await, exports the tdjson
+            API), `td_wasm.{js,wasm}` (Emscripten, single-threaded), `tdlib.properties`. The same package as
+            `tdlib-web.tgz`, installable by URL (`npm install <release URL>/tdlib-web.tgz`).
+
+            **Schema** — `td-api-v${{ needs.version.outputs.tdlib_version }}.tl`.
+          files: |
+            release/*.tar.zst
+            release/*.tgz
+            release/*.tl
+          draft: false
+          prerelease: false
+          make_latest: true

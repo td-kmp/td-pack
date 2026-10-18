@@ -1,0 +1,12 @@
+.idea
+.claude
+.DS_Store
+
+# TDLib submodule content (never committed — managed by git submodule)
+td/
+
+# Build trees, toolchains and downloads (pack.sh)
+build/
+
+# Packaged archives (pack.sh)
+out/

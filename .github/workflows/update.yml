@@ -1,0 +1,64 @@
+name: Update TDLib submodule
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Every Monday at 03:00 UTC
+    - cron: '0 3 * * 1'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-td-submodule
+  cancel-in-progress: false
+
+jobs:
+  update-td:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Setup git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Update td submodule to latest remote commit
+        id: update
+        run: |
+          set -euo pipefail
+          git submodule sync -- td
+          git submodule update --init td
+          git submodule update --remote td
+
+          # Allow only submodule pointer change in root repository.
+          CHANGED="$(git status --porcelain)"
+          if [[ -n "$CHANGED" ]]; then
+            if echo "$CHANGED" | awk '{print $2}' | grep -v '^td$' >/dev/null; then
+              echo "Unexpected changes detected:"
+              echo "$CHANGED"
+              exit 1
+            fi
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push to main
+        if: steps.update.outputs.has_changes == 'true'
+        run: |
+          set -euo pipefail
+          git add td
+          git commit -m "chore: update td submodule"
+          git pull --rebase origin main
+          git push origin HEAD:main
+
+      - name: No changes
+        if: steps.update.outputs.has_changes == 'false'
+        run: echo "td submodule is already up to date"
