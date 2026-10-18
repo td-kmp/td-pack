@@ -49,9 +49,11 @@ function receive() {
   const events = [];
   for (let event; (event = string(td.receive())) !== null;) events.push(withPageClientId(event));
   if (events.length > 0) postMessage({ type: 'events', events });
-  // TDLib's next timer, in seconds; capped, since setTimeout overflows past ~24 days.
+  // TDLib's next timer, in seconds, is only a hint: work TDLib queues for itself (the steps of
+  // closing an instance, say) does not show in it (it says 10000 s). So poll again at once after
+  // events, and at least every second.
   const timeout = td.getTimeout();
-  const seconds = Number.isFinite(timeout) ? Math.min(Math.max(timeout, 0), 60) : 60;
+  const seconds = events.length > 0 ? 0 : Number.isFinite(timeout) ? Math.min(Math.max(timeout, 0), 1) : 1;
   timer = setTimeout(receive, seconds * 1000);
 }
 

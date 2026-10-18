@@ -18,9 +18,11 @@ async function receiveUntil(predicate, seconds) {
   return null;
 }
 
+// Closing takes several steps TDLib schedules for itself: the Worker must keep polling through them.
 async function closeClient(client) {
   td.send(client, '{"@type":"close"}');
-  await receiveUntil((e) => e.includes('authorizationStateClosed') && e.includes(`"@client_id":${client}`), 10);
+  const closed = await receiveUntil((e) => e.includes('authorizationStateClosed') && e.includes(`"@client_id":${client}`), 10);
+  check(closed !== null, `client ${client} did not close`);
 }
 
 async function smoke() {
