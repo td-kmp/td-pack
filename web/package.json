@@ -1,7 +1,7 @@
 {
   "name": "@td-kmp/tdlib-wasm",
   "version": "@VERSION@",
-  "description": "TDLib compiled to WebAssembly, running in a Web Worker, with its JSON interface as an ES module",
+  "description": "TDLib compiled to WebAssembly with Emscripten",
   "license": "BSL-1.0",
   "repository": "github:td-kmp/td-pack",
   "type": "module",
@@ -12,13 +12,7 @@
       "types": "./index.d.ts",
       "default": "./index.mjs"
     },
-    "./client.mjs": {
-      "types": "./client.d.ts",
-      "default": "./client.mjs"
-    },
-    "./worker.mjs": "./worker.mjs",
     "./td_wasm.js": "./td_wasm.js",
     "./td_wasm.wasm": "./td_wasm.wasm"
-  },
-  "sideEffects": true
+  }
 }
