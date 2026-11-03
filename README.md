@@ -73,38 +73,31 @@ otherwise `atexit` tears OpenSSL down under TDLib's still-running threads.
 
 One WebAssembly module for Kotlin/JS and Kotlin/Wasm (`pack.sh` target `web`), as an npm
 package `@td-kmp/tdlib-wasm`. `tdlib-web.tgz` is the same package in `npm pack` format: npm and
-yarn install it from its release URL, so no registry is involved —
-`"@td-kmp/tdlib-wasm": "https://github.com/td-kmp/td-pack/releases/download/v<version>/tdlib-web.tgz"`
-(this is how tdlib-kmp depends on it).
+yarn install it from its release URL, so no registry is involved:
+`"@td-kmp/tdlib-wasm": "https://github.com/td-kmp/td-pack/releases/download/v<version>/tdlib-web.tgz"`.
 
 ```
-td_wasm.js, td_wasm.wasm   Emscripten output (EXPORT_ES6 factory, web + worker), single-threaded
-worker.mjs                 the Web Worker TDLib runs in
-client.mjs, client.d.ts    the page side of the worker protocol: attach(worker) → tdjson API
-index.mjs, index.d.ts      the same API on the package's own worker, started on first use
+td_wasm.js, td_wasm.wasm   Emscripten output (MODULARIZE=instance, web + worker), single-threaded
+index.mjs, index.d.ts      top-level functions over the raw exports, with strings
 package.json, tdlib.properties
 ```
 
-```js
-import * as td from '@td-kmp/tdlib-wasm';         // worker.mjs started on first use, or:
-import { attach } from '@td-kmp/tdlib-wasm/client.mjs';
-const td = attach(new Worker(new URL('@td-kmp/tdlib-wasm/worker.mjs', import.meta.url), { type: 'module' }), '1.8.69');
+The module runs on whichever thread imports it; the package has no Web Worker. Applications write
+their own (tdlib-kmp's `WorkerTdLib` documents the protocol and has a sample):
 
-const id = td.createClientId();            // synchronous
-td.send(id, request);                      // synchronous, in order
-await td.receive(timeout);                 // string | null: td_receive, one receiver at a time
-await td.execute(request);                 // string | null
-td.setLogMessageHandler(maxVerbosityLevel, (level, message) => {} /* or null */);
-await td.ready;                            // TDLib's version; attach(worker, version) fails every call on a mismatch
+```js
+import initTdlib, { createClientId, send, receive, execute, getTimeout, onSocketEvent, FS, IDBFS } from '@td-kmp/tdlib-wasm';
+
+await initTdlib();
+const id = createClientId();
+send(id, request);
+receive();                 // string | null, never blocks
 ```
 
-The worker polls TDLib on its timers, after requests and on WebSocket events, and posts events
-to the page in batches (`worker.mjs` documents the messages). No `SharedArrayBuffer`, so no
-COOP/COEP headers. TDLib connects to Telegram over `wss://` (`*.web.telegram.org/apiws`);
-`addProxy` is unsupported. `/tdlib` is an IDBFS mount (IndexedDB database `/tdlib`), loaded
-before the first request and written back every 5 s and when a client closes: put
-`database_directory` and `files_directory` under it. Everything else is in memory. Run one
-worker per database at a time; two tabs writing the same IndexedDB database corrupt it.
+All TDLib's work happens inside `receive`: `send` only queues, so call it after requests, on
+`onSocketEvent` and on `getTimeout`, and at least every second, since that timeout does not cover
+work TDLib queues for itself. No `SharedArrayBuffer`, so no COOP/COEP headers. TDLib connects to
+Telegram over `wss://` (`*.web.telegram.org/apiws`); `addProxy` is unsupported.
 
 ## How the archives get small
 
@@ -161,7 +154,7 @@ and runs `tests/jni`. They run where the host can:
   (`tests/docker/wine.Dockerfile`), JNI in `eclipse-temurin`;
 * an Android device/emulator via `dalvikvm`: `TDPACK_ANDROID_SERIAL=<adb serial>`;
 * `web-verify`: `tests/web/smoke.mjs` in headless Chrome, loading the package over HTTP as
-  a bundle would (execute, log handler, client round-trips through the Worker).
+  a bundle would (execute, log handler, storage, client round-trips).
 
 `TDPACK_NETWORK_TEST=1` adds `tests/network.c`: a full MTProto handshake with Telegram's
 test DC (an invalid `api_id` answered with `API_ID_INVALID`), which proves the trimmed

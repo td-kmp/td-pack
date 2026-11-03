@@ -1,25 +1,26 @@
-// Browser counterpart of tests/smoke.c (and, with ?network=1, tests/network.c),
-// against the package's page API: TDLib runs in its Worker, execute and receive
-// are promises, createClientId and send are synchronous.
-// Reports one "TDPACK_RESULT ok|fail ..." console line for run.mjs.
-import * as td from './tdlib/index.mjs';
-import { attach } from './tdlib/client.mjs';
+// Browser counterpart of tests/smoke.c (and, with ?network=1, tests/network.c): the module on the page's
+// thread, polled the way td_emscripten.cpp expects. Reports one "TDPACK_RESULT ok|fail ..." line for run.mjs.
+import initTdlib, * as td from './tdlib/index.mjs';
 
 const network = new URLSearchParams(location.search).get('network') === '1';
 
 class Failure extends Error {}
 const check = (condition, message) => { if (!condition) throw new Failure(message); };
 
-// One receiver, like td_receive: the next event of any client until the predicate matches.
+await initTdlib();
+
 async function receiveUntil(predicate, seconds) {
   for (const end = Date.now() + seconds * 1000; Date.now() < end;) {
-    const event = await td.receive(1.0);
-    if (event !== null && predicate(event)) return event;
+    const event = td.receive();
+    if (event) {
+      if (predicate(event)) return event;
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
   }
   return null;
 }
 
-// Closing takes several steps TDLib schedules for itself: the Worker must keep polling through them.
 async function closeClient(client) {
   td.send(client, '{"@type":"close"}');
   const closed = await receiveUntil((e) => e.includes('authorizationStateClosed') && e.includes(`"@client_id":${client}`), 10);
@@ -27,18 +28,21 @@ async function closeClient(client) {
 }
 
 async function smoke() {
-  await td.execute('{"@type":"setLogVerbosityLevel","new_verbosity_level":1}');
-
-  const entities = await td.execute('{"@type":"getTextEntities","text":"@telegram /test https://telegram.org"}');
+  td.execute('{"@type":"setLogVerbosityLevel","new_verbosity_level":1}');
+  const entities = td.execute('{"@type":"getTextEntities","text":"@telegram /test https://telegram.org"}');
   check(entities?.includes('textEntityTypeUrl'), `getTextEntities failed: ${entities}`);
 
-  // Log messages arrive from the Worker before the answer of the request that logged them.
   const logged = [];
-  td.setLogMessageHandler(1, (level, message) => logged.push([level, message]));
-  await td.execute('{"@type":"addLogMessage","verbosity_level":1,"text":"td-pack log check"}');
+  td.setLogMessageHandler(1, (level, message) => logged.push(message));
+  td.execute('{"@type":"addLogMessage","verbosity_level":1,"text":"td-pack log check"}');
   td.setLogMessageHandler(0, null);
-  check(logged.some(([level, message]) => level === 1 && message.includes('td-pack log check')),
-    `log message handler got ${JSON.stringify(logged)}`);
+  check(logged.some((message) => message.includes('td-pack log check')), `log handler got ${JSON.stringify(logged)}`);
+
+  // Everything tdlib-kmp's sample worker uses for storage.
+  td.FS.mkdir('/idb');
+  td.FS.mount(td.IDBFS, {}, '/idb');
+  await new Promise((resolve, reject) => td.FS.syncfs(true, (e) => (e ? reject(e) : resolve())));
+  check(td.WORKERFS !== undefined, 'WORKERFS is not exported');
 
   const first = td.createClientId();
   const second = td.createClientId();
@@ -73,24 +77,10 @@ async function networkCheck() {
   return JSON.parse(answer).message;
 }
 
-// attach(): the API on a Worker the page created, with the version check.
-async function attachCheck(version) {
-  const worker = new Worker(new URL('./tdlib/worker.mjs', import.meta.url), { type: 'module' });
-  const own = attach(worker, version);
-  check((await own.ready) === version, 'attach(): ready must resolve with the version');
-  check((await own.execute('{"@type":"getOption","name":"version"}'))?.includes(version), 'attach(): execute failed');
-  worker.terminate();
-
-  const wrong = attach(new Worker(new URL('./tdlib/worker.mjs', import.meta.url), { type: 'module' }), '0.0.0');
-  const rejected = await wrong.execute('{"@type":"getOption","name":"version"}').then(() => false, () => true);
-  check(rejected, 'attach() with another version must fail every call');
-}
-
 try {
   const version = await smoke();
-  await attachCheck(version);
   const handshake = network ? `, test DC: ${await networkCheck()}` : '';
-  console.log(`TDPACK_RESULT ok: TDLib ${version} (in a Worker, attach() checked)${handshake}`);
+  console.log(`TDPACK_RESULT ok: TDLib ${version}${handshake}`);
 } catch (e) {
   console.log(`TDPACK_RESULT fail: ${e instanceof Failure ? e.message : e?.stack ?? e}`);
 }

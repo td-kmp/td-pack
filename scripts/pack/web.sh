@@ -1,16 +1,15 @@
 # shellcheck shell=bash
 # Web: TDLib as one Emscripten module in an npm package, out/tdlib-web.tar.zst:
-#   td_wasm.js, td_wasm.wasm   Emscripten output (EXPORT_ES6 factory, web + worker)
-#   worker.mjs                 the Web Worker TDLib runs in; speaks the protocol in its header
-#   client.mjs, client.d.ts    the page side of that protocol: attach(worker) → tdjson API
-#   index.mjs, index.d.ts      the same API on the package's own worker, started on first use
+#   td_wasm.js, td_wasm.wasm   Emscripten output (MODULARIZE=instance, web + worker)
+#   index.mjs, index.d.ts      top-level functions over the raw exports, with strings
 #   package.json, tdlib.properties
 # The same package as out/tdlib-web.tgz (npm pack format): npm and yarn install
-# it from its release URL, no registry involved.
+# it from its release URL, no registry involved. The package has no Web Worker:
+# the application writes its own (tdlib-kmp's WorkerTdLib documents the protocol).
 #
 # TDLib has no threads here: td_receive never blocks and td_emscripten_get_timeout
-# says when to poll again. td's td_wasm target is not used — its flags target the
-# Emscripten 3.1.1 runtime — so web_link links the same objects with its own.
+# says when to poll again. td's td_wasm target is not used: its flags target the
+# Emscripten 3.1.1 runtime, so web_link links the same objects with its own.
 
 web_link() {
   banner "Link — $TARGET"
@@ -23,7 +22,7 @@ web_link() {
   info "Inputs: ${#archives[@]} archives"
 
   local settings=(
-    -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createTdlibModule
+    -sMODULARIZE=instance -sEXPORT_ES6=1
     -sENVIRONMENT=web,worker
     -sUSE_ZLIB=1
     -sALLOW_MEMORY_GROWTH=1
@@ -34,9 +33,10 @@ web_link() {
     "-sWEBSOCKET_URL=wss:#"
     # addFunction, for the log message callback.
     -sALLOW_TABLE_GROWTH=1
-    -sEXPORTED_FUNCTIONS=_main,_td_set_log_message_callback
-    -sEXPORTED_RUNTIME_METHODS=FS,IDBFS,cwrap,addFunction,removeFunction,UTF8ToString
+    -sEXPORTED_FUNCTIONS=_main,_free,_td_emscripten_create_client_id,_td_emscripten_send,_td_emscripten_receive,_td_emscripten_execute,_td_emscripten_get_timeout,_td_set_log_message_callback
+    -sEXPORTED_RUNTIME_METHODS=FS,IDBFS,WORKERFS,addFunction,removeFunction,stringToNewUTF8,UTF8ToString
     -lidbfs.js
+    -lworkerfs.js
   )
   # shellcheck disable=SC2086
   run_progress "$work/link.log" "emcc link (LTO)" time "$CXX_BIN" $OPT_FLAGS "${settings[@]}" \
