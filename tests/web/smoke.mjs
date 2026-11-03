@@ -3,6 +3,7 @@
 // are promises, createClientId and send are synchronous.
 // Reports one "TDPACK_RESULT ok|fail ..." console line for run.mjs.
 import * as td from './tdlib/index.mjs';
+import { attach } from './tdlib/client.mjs';
 
 const network = new URLSearchParams(location.search).get('network') === '1';
 
@@ -72,10 +73,24 @@ async function networkCheck() {
   return JSON.parse(answer).message;
 }
 
+// attach(): the API on a Worker the page created, with the version check.
+async function attachCheck(version) {
+  const worker = new Worker(new URL('./tdlib/worker.mjs', import.meta.url), { type: 'module' });
+  const own = attach(worker, version);
+  check((await own.ready) === version, 'attach(): ready must resolve with the version');
+  check((await own.execute('{"@type":"getOption","name":"version"}'))?.includes(version), 'attach(): execute failed');
+  worker.terminate();
+
+  const wrong = attach(new Worker(new URL('./tdlib/worker.mjs', import.meta.url), { type: 'module' }), '0.0.0');
+  const rejected = await wrong.execute('{"@type":"getOption","name":"version"}').then(() => false, () => true);
+  check(rejected, 'attach() with another version must fail every call');
+}
+
 try {
   const version = await smoke();
+  await attachCheck(version);
   const handshake = network ? `, test DC: ${await networkCheck()}` : '';
-  console.log(`TDPACK_RESULT ok: TDLib ${version} (in a Worker)${handshake}`);
+  console.log(`TDPACK_RESULT ok: TDLib ${version} (in a Worker, attach() checked)${handshake}`);
 } catch (e) {
   console.log(`TDPACK_RESULT fail: ${e instanceof Failure ? e.message : e?.stack ?? e}`);
 }

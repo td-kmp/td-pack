@@ -1,8 +1,18 @@
-// TDLib's Web Worker (started by index.mjs). It owns the Emscripten module and
-// runs td_receive whenever TDLib may have something to do: its own timers
-// (getTimeout), a request, or an event on one of its WebSockets. Events go to
-// the page in batches; the page talks to it with the messages handled below.
+// TDLib's Web Worker. It owns the Emscripten module and runs td_receive whenever
+// TDLib may have work: on its own timers (getTimeout), after a request, on a
+// WebSocket event. Events go to the page in batches. The page side of this
+// protocol is client.mjs:
+//   page → worker  create {clientId} | send {clientId, request} | execute {id, request}
+//                  | setLogMessageHandler {maxVerbosityLevel, enabled}
+//   worker → page  ready {version} | events {events: string[]} | executed {id, result}
+//                  | log {level, message} | error {message}
+// Storage: /tdlib is an IDBFS mount (IndexedDB database "/tdlib"), loaded before
+// the first message is handled and written back every SYNC_INTERVAL_MS and when
+// a client closes. Everything else lives in memory.
 import createTdlibModule from './td_wasm.js';
+
+const PERSISTENT_ROOT = '/tdlib';
+const SYNC_INTERVAL_MS = 5000;
 
 // Messages that arrive while the module loads are handled once it is ready.
 const early = [];
@@ -14,10 +24,31 @@ const fail = (message) => postMessage({ type: 'error', message });
 let module;
 try {
   module = await createTdlibModule({ onAbort: (what) => fail(`TDLib aborted: ${what}`) });
+  module.FS.mkdir(PERSISTENT_ROOT);
+  module.FS.mount(module.IDBFS, {}, PERSISTENT_ROOT);
+  await syncfs(true);
 } catch (e) {
   fail(`TDLib failed to load: ${e?.message ?? e}`);
   throw e;
 }
+
+function syncfs(populate) {
+  return new Promise((resolve, reject) => module.FS.syncfs(populate, (err) => (err ? reject(err) : resolve())));
+}
+
+let persisting = false;
+async function persist() {
+  if (persisting) return;
+  persisting = true;
+  try {
+    await syncfs(false);
+  } catch (e) {
+    postMessage({ type: 'log', level: 1, message: `IDBFS sync failed: ${e?.message ?? e}` });
+  } finally {
+    persisting = false;
+  }
+}
+setInterval(persist, SYNC_INTERVAL_MS);
 
 const string = (pointer) => (pointer === 0 ? null : module.UTF8ToString(pointer));
 const td = {
@@ -29,17 +60,6 @@ const td = {
   setLogMessageCallback: module.cwrap('td_set_log_message_callback', null, ['number', 'number']),
 };
 
-// The page numbers clients itself (createClientId must be synchronous there).
-// TDLib numbers them 1, 2, 3, ... too, so the two only differ if something
-// else created a client in this module; then events are renumbered.
-const tdIds = new Map();
-const pageIds = new Map();
-function withPageClientId(event) {
-  if (pageIds.size === 0) return event;
-  return event.replace(/"@client_id":(\d+)/, (match, id) =>
-    pageIds.has(Number(id)) ? `"@client_id":${pageIds.get(Number(id))}` : match);
-}
-
 let timer = 0;
 let soon = false;
 
@@ -47,11 +67,13 @@ function receive() {
   soon = false;
   clearTimeout(timer);
   const events = [];
-  for (let event; (event = string(td.receive())) !== null;) events.push(withPageClientId(event));
+  for (let event; (event = string(td.receive())) !== null;) events.push(event);
   if (events.length > 0) postMessage({ type: 'events', events });
-  // TDLib's next timer, in seconds, is only a hint: work TDLib queues for itself (the steps of
-  // closing an instance, say) does not show in it (it says 10000 s). So poll again at once after
-  // events, and at least every second.
+  // A closed client has written its database: flush now, not at the next interval.
+  if (events.some((event) => event.includes('"authorizationStateClosed"'))) persist();
+  // getTimeout is a hint: work TDLib queues for itself (the steps of closing an
+  // instance, say) does not show in it. Poll again at once after events, and at
+  // least every second.
   const timeout = td.getTimeout();
   const seconds = events.length > 0 ? 0 : Number.isFinite(timeout) ? Math.min(Math.max(timeout, 0), 1) : 1;
   timer = setTimeout(receive, seconds * 1000);
@@ -73,15 +95,14 @@ handle = (message) => {
   try {
     switch (message.type) {
       case 'create': {
-        const tdId = td.createClientId();
-        if (tdId !== message.clientId) {
-          tdIds.set(message.clientId, tdId);
-          pageIds.set(tdId, message.clientId);
-        }
+        // The page numbers clients itself (createClientId is synchronous there),
+        // from 1 in creation order, as TDLib does; nothing else creates clients here.
+        const id = td.createClientId();
+        if (id !== message.clientId) fail(`client id mismatch: page ${message.clientId}, TDLib ${id}`);
         break;
       }
       case 'send':
-        td.send(tdIds.get(message.clientId) ?? message.clientId, message.request);
+        td.send(message.clientId, message.request);
         receiveSoon();
         break;
       case 'execute':
@@ -97,11 +118,13 @@ handle = (message) => {
         break;
       }
       default:
-        fail(`Unknown message: ${message.type}`);
+        fail(`unknown message: ${message.type}`);
     }
   } catch (e) {
     fail(`${message.type} failed: ${e?.message ?? e}`);
   }
 };
+
+postMessage({ type: 'ready', version: JSON.parse(string(td.execute('{"@type":"getOption","name":"version"}'))).value });
 early.splice(0).forEach(handle);
 receive();
