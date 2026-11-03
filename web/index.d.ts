@@ -1,3 +1,5 @@
+export { attach, TdLibClient } from './client.js';
+
 export declare function createClientId(): number;
 export declare function send(clientId: number, request: string): void;
 export declare function receive(timeout: number): Promise<string | null>;

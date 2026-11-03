@@ -12,6 +12,11 @@
       "types": "./index.d.ts",
       "default": "./index.mjs"
     },
+    "./client.mjs": {
+      "types": "./client.d.ts",
+      "default": "./client.mjs"
+    },
+    "./worker.mjs": "./worker.mjs",
     "./td_wasm.js": "./td_wasm.js",
     "./td_wasm.wasm": "./td_wasm.wasm"
   },

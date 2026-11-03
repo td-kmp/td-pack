@@ -72,34 +72,39 @@ otherwise `atexit` tears OpenSSL down under TDLib's still-running threads.
 ### Web — `tdlib-web.tar.zst`, `tdlib-web.tgz`
 
 One WebAssembly module for Kotlin/JS and Kotlin/Wasm (`pack.sh` target `web`), as an npm
-package `@td-kmp/tdlib-wasm`. `tdlib-web.tgz` is the same package in `npm pack` format, so
-npm/yarn install it from its release URL; no npm registry involved.
+package `@td-kmp/tdlib-wasm`. `tdlib-web.tgz` is the same package in `npm pack` format: npm and
+yarn install it from its release URL, so no registry is involved —
+`"@td-kmp/tdlib-wasm": "https://github.com/td-kmp/td-pack/releases/download/v<version>/tdlib-web.tgz"`
+(this is how tdlib-kmp depends on it).
 
 ```
-package.json
-index.mjs, index.d.ts      the tdjson API (td_json_client.h) for the page
+td_wasm.js, td_wasm.wasm   Emscripten output (EXPORT_ES6 factory, web + worker), single-threaded
 worker.mjs                 the Web Worker TDLib runs in
-td_wasm.js, td_wasm.wasm   Emscripten output (EXPORT_ES6 factory, web + worker)
-tdlib.properties
+client.mjs, client.d.ts    the page side of the worker protocol: attach(worker) → tdjson API
+index.mjs, index.d.ts      the same API on the package's own worker, started on first use
+package.json, tdlib.properties
 ```
 
 ```js
-import * as td from '@td-kmp/tdlib-wasm';
+import * as td from '@td-kmp/tdlib-wasm';         // worker.mjs started on first use, or:
+import { attach } from '@td-kmp/tdlib-wasm/client.mjs';
+const td = attach(new Worker(new URL('@td-kmp/tdlib-wasm/worker.mjs', import.meta.url), { type: 'module' }), '1.8.69');
 
 const id = td.createClientId();            // synchronous
 td.send(id, request);                      // synchronous, in order
 await td.receive(timeout);                 // string | null: td_receive, one receiver at a time
 await td.execute(request);                 // string | null
 td.setLogMessageHandler(maxVerbosityLevel, (level, message) => {} /* or null */);
+await td.ready;                            // TDLib's version; attach(worker, version) fails every call on a mismatch
 ```
 
-TDLib runs in a Web Worker started on first use (`new Worker(new URL('./worker.mjs',
-import.meta.url))`, which bundlers such as webpack 5 follow, as they follow
-`td_wasm.wasm`): the page never blocks on it and needs no setup. Its Emscripten build is
-single-threaded (no `SharedArrayBuffer`, so no COOP/COEP headers); the Worker polls TDLib
-on its timers, after requests and on socket events, and posts events to the page. TDLib
-connects to Telegram over `wss://` (`*.web.telegram.org/apiws`). Databases live in memory
-(MEMFS) for now.
+The worker polls TDLib on its timers, after requests and on WebSocket events, and posts events
+to the page in batches (`worker.mjs` documents the messages). No `SharedArrayBuffer`, so no
+COOP/COEP headers. TDLib connects to Telegram over `wss://` (`*.web.telegram.org/apiws`);
+`addProxy` is unsupported. `/tdlib` is an IDBFS mount (IndexedDB database `/tdlib`), loaded
+before the first request and written back every 5 s and when a client closes: put
+`database_directory` and `files_directory` under it. Everything else is in memory. Run one
+worker per database at a time; two tabs writing the same IndexedDB database corrupt it.
 
 ## How the archives get small
 
@@ -138,7 +143,9 @@ sysroots are downloaded on demand into `~/.konan` — no Gradle needed.
 ```
 
 Requirements: CMake, Ninja, perl, zstd, a JDK with headers (`JAVA_HOME`); ccache is used
-when present. `web` also needs Node.js ≥ 22 (npm, tests) and Chrome or Chromium (`CHROME`). Android needs the NDK (`ANDROID_NDK_ROOT`, or r28c in the Android SDK).
+when present. `web` also needs Python ≥ 3.10 for the Emscripten SDK (`EMSDK_PYTHON=<python3>` when
+the default one is older, as on macOS), Node.js ≥ 22 (npm, tests) and Chrome or Chromium (`CHROME`).
+Android needs the NDK (`ANDROID_NDK_ROOT`, or r28c in the Android SDK).
 
 Outputs go to `out/` (archives) and `build/<target>/` (work trees, logs).
 
